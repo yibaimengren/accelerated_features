@@ -60,14 +60,16 @@ class XFeat(nn.Module):
 					'scores'       ->   torch.Tensor(N,): keypoint scores
 					'descriptors'  ->   torch.Tensor(N, 64): local features
 		"""
-		if top_k is None: top_k = self.top_k
-		if detection_threshold is None: detection_threshold = self.detection_threshold
-		x, rh1, rw1 = self.preprocess_tensor(x) #调整图像大小，以确保图像可以被32整除，rh1和rw1是图像缩放比例
-
-		B, _, _H1, _W1 = x.shape
-        
+		#1.使用self.preprocess_tensor调整图像大小，以确保图像可以被32整除，rh1和rw1是图像缩放比例
+		#2.使用self.net(x)得到M1:特征描述器64×H/8×W/8，k1:关键点特征图 65×H/8×W/8，H1：heatmap 1×H/8×W/8 似乎是表示对应特征描述器向量能被匹配的概率
+		#3.使用self.get_kpts_heatmap(K1)在关键点特征图K1上对每8x8区域进行softmax，然后重新展开为(B,1,H,W)得到K1h
+		#4.使用self.NMS(K1h, threshold=detection_threshold, kernel_size=5)获取每5x5区域内最大值大的索引mkpts
+		#5.将关键点对应的局部重要性值k1h*关键点对应的heatmap值作为评估分数scores
+		#6.根据scores选出得分前top_k的元素，获取每个元素对应关键点坐标、分数
+		#7.
 		M1, K1, H1 = self.net(x) #M1:特征描述器64×H/8×W/8，k1:关键点特征图 65×H/8×W/8，H1：heatmap 1×H/8×W/8 似乎是表示对应特征描述器向量能被匹配的概率
 		M1 = F.normalize(M1, dim=1) #在通道维度进行归一化
+
 		#Convert logits to heatmap and extract kpts
 		K1h = self.get_kpts_heatmap(K1) #每个8x8区域进行softmax，然后重新展开为(B,1,H,W)
 		mkpts = self.NMS(K1h, threshold=detection_threshold, kernel_size=5) #(B,N,2),N是单张图关键点数量的最大值。
@@ -89,13 +91,7 @@ class XFeat(nn.Module):
 		scores = torch.gather(scores, -1, idxs)[:, :top_k]
 
 		#Interpolate descriptors at kpts positions
-		print(M1.shape)
-		print(mkpts.shape)
-		print(_H1)
-		print(_W1)
-		#这里要注意，坐标的大小和特征图的大小不是1:1而是8:1的，所以要通过interpolator会先把坐标映射到-1到1，再获取对应坐标特征
-		#这就会导致大多数点的特征是使用插值的方式融合得到的，这真的能代表该点的特征吗？
-		feats = self.interpolator(M1, mkpts, H = _H1, W = _W1) #选出前top_k个关键点对应的特征
+		feats = self.interpolator(M1, mkpts, H = _H1, W = _W1) #选出前top_k个特征
 
 		#L2-Normalize
 		feats = F.normalize(feats, dim=-1) #归一化
