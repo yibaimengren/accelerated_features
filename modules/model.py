@@ -147,10 +147,10 @@ class XFeatModel(nn.Module):
 		x4 = F.interpolate(x4, (x3.shape[-2], x3.shape[-1]), mode='bilinear') #把x4的分辨率调整到和x3一致
 		x5 = F.interpolate(x5, (x3.shape[-2], x3.shape[-1]), mode='bilinear') #把x5的分辨率调整到和x3一致
 		feats = self.block_fusion( x3 + x4 + x5 ) #64×H/8×W/8 特征描述器
-		print(feats.shape)
+
 		#heads
 		heatmap = self.heatmap_head(feats) # Reliability map #1×H/8×W/8 似乎是表示对应特征描述器向量能被匹配的概率
-		print('heatmap:',heatmap.shape)
+
 		keypoints = self.keypoint_head(self._unfold2d(x, ws=8)) #Keypoint map logits #unfold:64×H/8×W/8，keypoint_head:65×H/8×W/8
 
 		return feats, keypoints, heatmap

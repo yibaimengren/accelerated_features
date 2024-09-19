@@ -89,10 +89,6 @@ class XFeat(nn.Module):
 		scores = torch.gather(scores, -1, idxs)[:, :top_k]
 
 		#Interpolate descriptors at kpts positions
-		print(M1.shape)
-		print(mkpts.shape)
-		print(_H1)
-		print(_W1)
 		#这里要注意，坐标的大小和特征图的大小不是1:1而是8:1的，所以要通过interpolator会先把坐标映射到-1到1，再获取对应坐标特征
 		#这就会导致大多数点的特征是使用插值的方式融合得到的，这真的能代表该点的特征吗？
 		feats = self.interpolator(M1, mkpts, H = _H1, W = _W1) #选出前top_k个关键点对应的特征
@@ -102,7 +98,10 @@ class XFeat(nn.Module):
 
 		#Correct kpt scale
 		mkpts = mkpts * torch.tensor([rw1,rh1], device=mkpts.device).view(1, 1, -1) #把关键点坐标缩放到原图尺寸
-
+		print('detectAndcompute:')
+		print(scores.shape)
+		print(feats.shape)
+		print(mkpts.shape)
 		valid = scores > 0
 
 		return [  
@@ -271,17 +270,17 @@ class XFeat(nn.Module):
 	@torch.inference_mode()
 	def batch_match(self, feats1, feats2, min_cossim = -1):
 		B = len(feats1)
-		cossim = torch.bmm(feats1, feats2.permute(0,2,1))
-		match12 = torch.argmax(cossim, dim=-1)
-		match21 = torch.argmax(cossim.permute(0,2,1), dim=-1)
+		cossim = torch.bmm(feats1, feats2.permute(0,2,1)) #bmm,批量矩阵乘法
+		match12 = torch.argmax(cossim, dim=-1) #argmax 返回指定维度最大值的索引
+		match21 = torch.argmax(cossim.permute(0,2,1), dim=-1) #转置，然后获取维度最大值的索引
 
-		idx0 = torch.arange(len(match12[0]), device=match12.device)
+		idx0 = torch.arange(len(match12[0]), device=match12.device) #获取第一个样本的关键点数量
 
 		batched_matches = []
 
 		for b in range(B):
-			mutual = match21[b][match12[b]] == idx0
-
+			mutual = match21[b][match12[b]] == idx0  #判断是否为互相相似
+			#在使用相似度阈值进行筛选
 			if min_cossim > 0:
 				cossim_max, _ = cossim[b].max(dim=1)
 				good = cossim_max > min_cossim
@@ -296,54 +295,63 @@ class XFeat(nn.Module):
 		return batched_matches
 
 	def subpix_softmax2d(self, heatmaps, temp = 3):
+		'''此函数用于计算关键点的偏移
+		获取一个和输入热图同样大小的坐标图，其中坐标中心点在坐标图中心，
+		再将热图进行softmax计算后与坐标图进行乘得到加权坐标值，
+		然后将所有的加权坐标值进行求和，得到对应每个热图的坐标值'''
 		N, H, W = heatmaps.shape
-		heatmaps = torch.softmax(temp * heatmaps.view(-1, H*W), -1).view(-1, H, W)
-		x, y = torch.meshgrid(torch.arange(W, device =  heatmaps.device ), torch.arange(H, device =  heatmaps.device ), indexing = 'xy')
-		x = x - (W//2)
+		heatmaps = torch.softmax(temp * heatmaps.view(-1, H*W), -1).view(-1, H, W) #在输入的最后两个维度上进行增强softmax计算
+		x, y = torch.meshgrid(torch.arange(W, device =  heatmaps.device ), torch.arange(H, device =  heatmaps.device ), indexing = 'xy') #获得两个H×W大小的张量，且元素分别是1~W按行排列且每一列元素相同，1~H按列排列且每一行元素相同
+		x = x - (W//2)#将中心移到(W//2, H//2)
 		y = y - (H//2)
+		print('x:',x)
 
-		coords_x = (x[None, ...] * heatmaps)
+		coords_x = (x[None, ...] * heatmaps) #加权坐标，每个位置的坐标乘以热图值（每个点的所占的权重）。加上下面的求和，就可以计算出依靠每个位置所占权重计算出的最终位置
 		coords_y = (y[None, ...] * heatmaps)
-		coords = torch.cat([coords_x[..., None], coords_y[..., None]], -1).view(N, H*W, 2)
-		coords = coords.sum(1)
+		coords = torch.cat([coords_x[..., None], coords_y[..., None]], -1).view(N, H*W, 2) #N,64,2
+		coords = coords.sum(1) #N,2
 
 		return coords
 
 	def refine_matches(self, d0, d1, matches, batch_idx, fine_conf = 0.25):
-		idx0, idx1 = matches[batch_idx]
+		idx0, idx1 = matches[batch_idx]#对应两个图像集匹配关键点的索引
+		#获取索引对应特征、坐标和缩放因子
 		feats1 = d0['descriptors'][batch_idx][idx0]
 		feats2 = d1['descriptors'][batch_idx][idx1]
 		mkpts_0 = d0['keypoints'][batch_idx][idx0]
 		mkpts_1 = d1['keypoints'][batch_idx][idx1]
 		sc0 = d0['scales'][batch_idx][idx0]
+		print('refine_matches')
 
 		#Compute fine offsets
-		offsets = self.net.fine_matcher(torch.cat([feats1, feats2],dim=-1))
-		conf = F.softmax(offsets*3, dim=-1).max(dim=-1)[0]
-		offsets = self.subpix_softmax2d(offsets.view(-1,8,8))
+		offsets = self.net.fine_matcher(torch.cat([feats1, feats2],dim=-1)) #可以认为输出对应8×8区域中每个点的特征。两张图的相似特征进行拼接，然后送入fine_matcher（MLP）,得到维度为(K,64)，其中K是匹配关键点的个数
 
-		mkpts_0 += offsets* (sc0[:,None]) #*0.9 #* (sc0[:,None])
+		conf = F.softmax(offsets*3, dim=-1).max(dim=-1)[0]  #(K) 获取offsets中每个通道经过softmax函数后的最大值，8×8区域中最突出点的比重（突出比例）。*3可能是为了放大softmax效果，值越大的占比更大，值越小的占比越小。max函数返回两个变量，values和indices
 
-		mask_good = conf > fine_conf
+		offsets = self.subpix_softmax2d(offsets.view(-1,8,8)) #(K,2)，根据重要性权重计算出加权坐标，即根据8×8区域中每个点的重要性，计算出一个加权坐标点代表这个8×8区域
+
+		mkpts_0 += offsets* (sc0[:,None]) #*0.9 #* (sc0[:,None])  #默认关键点坐标是8×8区域的左上角，将偏移加权坐标映射回原图比例，再将之前计算出的坐标与便宜加权坐标相加，得到最终坐标。为什么只需要作用到第一张图上，第二张图上却不需要？
+
+		mask_good = conf > fine_conf  #这一步应该是根据阈值和8x8区域中最突出点的权重，再进一步对关键点进行筛选
 		mkpts_0 = mkpts_0[mask_good]
 		mkpts_1 = mkpts_1[mask_good]
-
+		print(mkpts_0.shape)
+		print(torch.cat([mkpts_0, mkpts_1], dim=-1).shape)
 		return torch.cat([mkpts_0, mkpts_1], dim=-1)
 
 	@torch.inference_mode()
 	def match(self, feats1, feats2, min_cossim = 0.82):
-		cossim = feats1 @ feats2.t() #矩阵乘法，激素按余弦相似度
+		cossim = feats1 @ feats2.t() #矩阵乘法，计算余弦相似度
 		cossim_t = feats2 @ feats1.t()#cossim的转置
-		print(cossim)
+
 		_, match12 = cossim.max(dim=1) #找出feats1中每一个向量与feats2哪个向量最相似
 		_, match21 = cossim_t.max(dim=1) #找出feats2中每个向量与feats1哪个向量最相似
-		print(match12)
 
 		idx0 = torch.arange(len(match12), device=match12.device) #创建一个与match12长度相同的索引张量
-		print(idx0)
+
 		mutual = match21[match12] == idx0 #如果互相是最相似的，就设为true，这条代码真妙
 
-		#min_cossim>0则筛选大于阈值的索引，否则不筛选
+		#min_cossim>0则筛选大于min_cossim的索引，否则不筛选
 		if min_cossim > 0:
 			cossim, _ = cossim.max(dim=1)
 			good = cossim > min_cossim
@@ -371,16 +379,18 @@ class XFeat(nn.Module):
 		x, rh1, rw1 = self.preprocess_tensor(x)
 
 		M1, K1, H1 = self.net(x) #M1:特征描述器64×H/8×W/8，k1:关键点特征图 65×H/8×W/8，H1：heatmap 1×H/8×W/8 似乎是表示对应特征描述器向量能被匹配的概率
+
 		B, C, _H1, _W1 = M1.shape
 		
-		xy1 = (self.create_xy(_H1, _W1, M1.device) * 8).expand(B,-1,-1) #create返回一个shape为_H1*_W1×2的张量，其中包含h×w大小网格的所有坐标'''
-		M1 = M1.permute(0,2,3,1).reshape(B, -1, C) #B, H/8*H/8, 64
+		xy1 = (self.create_xy(_H1, _W1, M1.device) * 8).expand(B,-1,-1) #create返回一个shape为_H1*_W1×2的张量，其中包含h×w大小网格的所有坐标。注意这里有个*8，相当于把坐标值放大8倍
 
+		M1 = M1.permute(0,2,3,1).reshape(B, -1, C) #B, H/8*H/8, 64
 		H1 = H1.permute(0,2,3,1).reshape(B, -1) #B, 1*H/8*W/8
+
 		_, top_k = torch.topk(H1, k = min(len(H1[0]), top_k), dim=-1) #返回H1中大小排序前top_k个元素的(大小,索引) top_K:(B,k)
 
 		feats = torch.gather( M1, 1, top_k[...,None].expand(-1, -1, 64)) #选出top_k个特征，每个特征占一行 B, top_k, 64
-		mkpts = torch.gather(xy1, 1, top_k[...,None].expand(-1, -1, 2)) #选出top_k个特征对应的在H/8×W/8区域的坐标 B, top_k, 2
+		mkpts = torch.gather(xy1, 1, top_k[...,None].expand(-1, -1, 2)) #选出top_k个特征对应的在H×W区域的坐标 B, top_k, 2
 		mkpts = mkpts * torch.tensor([rw1, rh1], device=mkpts.device).view(1,-1) #B, top_k, 2
 
 		return mkpts, feats #B, top_k, 2；B, top_k, 64;
