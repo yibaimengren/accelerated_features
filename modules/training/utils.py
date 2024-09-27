@@ -53,22 +53,26 @@ def plot_corrs(p1, p2, src_pts, tgt_pts):
 def get_corresponding_pts(p1, p2, H, H2, augmentor, h, w, crop = None):
     '''
         Get dense corresponding points
+        p1:经过变换的图片,shape:(b,3,H,W)
+        p2:经过变换+TPS的图片,shape:(b,3,h,w)
+        H和H2是对应p1和p2的变换矩阵
+        augmentor：图片增强对象
+        h,w:H/8，W/8
     '''
     global debug_cnt
     negatives, positives = [], []
 
     with torch.no_grad():
         #real input res of samples
-        rh, rw = p1.shape[-2:]
-        ratio = torch.tensor([rw/w, rh/h], device = p1.device)
-
+        rh, rw = p1.shape[-2:] #图片分辨率
+        ratio = torch.tensor([rw/w, rh/h], device = p1.device) #8×8
         (H, mask1) = H
         (H2, src, W, A, mask2) = H2
 
         #Generate meshgrid of target pts
         x, y = torch.meshgrid(torch.arange(w, device=p1.device), torch.arange(h, device=p1.device), indexing ='xy')
         mesh = torch.cat([x.unsqueeze(-1), y.unsqueeze(-1)], dim=-1)
-        target_pts = mesh.view(-1, 2) * ratio
+        target_pts = mesh.view(-1, 2) * ratio #把每个点映射回8x8区域的左上角
 
         #Pack all transformations into T
         for batch_idx in range(len(p1)):
@@ -76,9 +80,9 @@ def get_corresponding_pts(p1, p2, H, H2, augmentor, h, w, crop = None):
                 T = (H[batch_idx], H2[batch_idx], 
                     src[batch_idx].unsqueeze(0), W[batch_idx].unsqueeze(0), A[batch_idx].unsqueeze(0))
                 #We now warp the target points to src image
-                src_pts = (augmentor.get_correspondences(target_pts, T) ) #target to src 
+                src_pts = (augmentor.get_correspondences(target_pts, T) ) #target to src .由于变换的原因，src_pts并不是整数，而是不规整的浮点数
                 tgt_pts = (target_pts)
-            
+
                 #Check out of bounds points
                 mask_valid = (src_pts[:, 0] >=0) & (src_pts[:, 1] >=0) & \
                             (src_pts[:, 0] < rw) & (src_pts[:, 1] < rh)

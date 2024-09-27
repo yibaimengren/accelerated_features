@@ -5,23 +5,24 @@ from modules.dataset.megadepth import megadepth_warper
 
 from modules.training import utils
 
-from third_party.alike_wrapper import extract_alike_kpts
+# from third_party.alike_wrapper import extract_alike_kpts
 
 def dual_softmax_loss(X, Y, temp = 0.2):
+    #X和Y应当是两组对应匹配的特征，即X中第n个特征和第Y中第n个特征是匹配的
     if X.size() != Y.size() or X.dim() != 2 or Y.dim() != 2:
         raise RuntimeError('Error: X and Y shapes must match and be 2D matrices')
 
-    dist_mat = (X @ Y.t()) * temp
-    conf_matrix12 = F.log_softmax(dist_mat, dim=1)
+    dist_mat = (X @ Y.t()) * temp #k×k
+    conf_matrix12 = F.log_softmax(dist_mat, dim=1) #F.Log_softmax是为了防止溢出和下溢出 #https://blog.csdn.net/qq_43183860/article/details/123929216
     conf_matrix21 = F.log_softmax(dist_mat.t(), dim=1)
-
     with torch.no_grad():
-        conf12 = torch.exp( conf_matrix12 ).max(dim=-1)[0]
+        conf12 = torch.exp( conf_matrix12 ).max(dim=-1)[0] #相当于取消logsoftmax中的log计算，获取纯softmax结果。max函数返回values和indices
         conf21 = torch.exp( conf_matrix21 ).max(dim=-1)[0]
-        conf = conf12 * conf21
+        conf = conf12 * conf21 #获取双向相似度权重值
 
-    target = torch.arange(len(X), device = X.device)
+    target = torch.arange(len(X), device = X.device) #len(x)是特征数量k
 
+    # F.nll_loss：负对数似然(negative log-likelihood)
     loss = F.nll_loss(conf_matrix12, target) + \
            F.nll_loss(conf_matrix21, target)
 
@@ -71,41 +72,40 @@ def fine_loss(f1, f2, pts1, pts2, fine_module, ws=7):
     return error
 
 
-def alike_distill_loss(kpts, img):
-
-    C, H, W = kpts.shape
-    kpts = kpts.permute(1,2,0) 
-    img = img.permute(1,2,0).expand(-1,-1,3).cpu().numpy() * 255
-
-    with torch.no_grad():
-        alike_kpts = torch.tensor( extract_alike_kpts(img), device=kpts.device )
-        labels = torch.ones((H, W), dtype = torch.long, device = kpts.device) * 64 # -> Default is non-keypoint (bin 64)
-        offsets = (((alike_kpts/8) - (alike_kpts/8).long())*8).long()
-        offsets =  offsets[:, 0] + 8*offsets[:, 1]  # Linear IDX
-        labels[(alike_kpts[:,1]/8).long(), (alike_kpts[:,0]/8).long()] = offsets
-
-    kpts = kpts.view(-1,C)
-    labels = labels.view(-1)
-
-    mask = labels < 64
-    idxs_pos = mask.nonzero().flatten()
-    idxs_neg = (~mask).nonzero().flatten()
-    perm = torch.randperm(idxs_neg.size(0))[:len(idxs_pos)//32]
-    idxs_neg = idxs_neg[perm]
-    idxs = torch.cat([idxs_pos, idxs_neg])
-
-    kpts = kpts[idxs]
-    labels = labels[idxs]
-
-    with torch.no_grad():
-        predicted = kpts.max(dim=-1)[1]
-        acc =  (labels == predicted)
-        acc = acc.sum() / len(acc)
-
-    kpts = F.log_softmax(kpts)
-    loss = F.nll_loss(kpts, labels, reduction = 'mean')
-
-    return loss, acc
+# def alike_distill_loss(kpts, img):
+#     C, H, W = kpts.shape
+#     kpts = kpts.permute(1,2,0)
+#     img = img.permute(1,2,0).expand(-1,-1,3).cpu().numpy() * 255
+#
+#     with torch.no_grad():
+#         alike_kpts = torch.tensor( extract_alike_kpts(img), device=kpts.device )
+#         labels = torch.ones((H, W), dtype = torch.long, device = kpts.device) * 64 # -> Default is non-keypoint (bin 64)
+#         offsets = (((alike_kpts/8) - (alike_kpts/8).long())*8).long()
+#         offsets =  offsets[:, 0] + 8*offsets[:, 1]  # Linear IDX
+#         labels[(alike_kpts[:,1]/8).long(), (alike_kpts[:,0]/8).long()] = offsets
+#
+#     kpts = kpts.view(-1,C)
+#     labels = labels.view(-1)
+#
+#     mask = labels < 64
+#     idxs_pos = mask.nonzero().flatten()
+#     idxs_neg = (~mask).nonzero().flatten()
+#     perm = torch.randperm(idxs_neg.size(0))[:len(idxs_pos)//32]
+#     idxs_neg = idxs_neg[perm]
+#     idxs = torch.cat([idxs_pos, idxs_neg])
+#
+#     kpts = kpts[idxs]
+#     labels = labels[idxs]
+#
+#     with torch.no_grad():
+#         predicted = kpts.max(dim=-1)[1]
+#         acc =  (labels == predicted)
+#         acc = acc.sum() / len(acc)
+#
+#     kpts = F.log_softmax(kpts)
+#     loss = F.nll_loss(kpts, labels, reduction = 'mean')
+#
+#     return loss, acc
 
 
 def keypoint_position_loss(kpts1, kpts2, pts1, pts2, softmax_temp = 1.0):
@@ -171,23 +171,26 @@ def coordinate_classification_loss(coords1, pts1, pts2, conf):
     '''
         Computes the fine coordinate classification loss, by re-interpreting the 64 bins to 8x8 grid and optimizing
         for correct offsets after warp
+        coords1:是两组匹配特征拼接后经过fine_matcher(MLP)计算得到的k×64特征
+        pts1:是匹配特征在h/8×w/8大小网格上的坐标，shape为k×2，且为对应H/8×W/8上每个位置特征的坐标
+        conf:是两组匹配特征经过经过矩阵乘法得到M1和M2后，分别经过softmax计算后，取每一行最大值后，求和结果。可能代表着每一行特征的匹配程度
     '''
     #Do not backprop coordinate warps
     with torch.no_grad():
 
-        coords1_detached = pts1 * 8 
+        coords1_detached = pts1 * 8 #把坐标点调整回H×W上
 
         #find offset
-        offsets1_detached = (coords1_detached/8) - (coords1_detached/8).long()
-        offsets1_detached = (offsets1_detached * 8).long()
-        labels1 = offsets1_detached[:, 0] + 8*offsets1_detached[:, 1]
+        offsets1_detached = (coords1_detached/8) - (coords1_detached/8).long() #映射回H/8×W/8上，并获取坐标与其最近整数坐标的差值
+        offsets1_detached = (offsets1_detached * 8).long()#计算偏移量相当于8×8区域上的多少格
+        labels1 = offsets1_detached[:, 0] + 8*offsets1_detached[:, 1]#这里计算的是将8X8区域展开成64时，坐标所在位置索引
 
     #pdb.set_trace()
     coords1_log = F.log_softmax(coords1, dim=-1)
 
-    predicted = coords1.max(dim=-1)[1]
+    predicted = coords1.max(dim=-1)[1] #获取每8x8区域中的最大值，作为偏移位置。这里与推理不太一致，推理的时候是计算权重坐标
     acc =  (labels1 == predicted)
-    acc = acc[conf > 0.1]
+    acc = acc[conf > 0.1]  #根据阈值计
     acc = acc.sum() / len(acc)
 
     loss = F.nll_loss(coords1_log, labels1, reduction = 'none')

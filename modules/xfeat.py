@@ -304,7 +304,6 @@ class XFeat(nn.Module):
 		x, y = torch.meshgrid(torch.arange(W, device =  heatmaps.device ), torch.arange(H, device =  heatmaps.device ), indexing = 'xy') #获得两个H×W大小的张量，且元素分别是1~W按行排列且每一列元素相同，1~H按列排列且每一行元素相同
 		x = x - (W//2)#将中心移到(W//2, H//2)
 		y = y - (H//2)
-		print('x:',x)
 
 		coords_x = (x[None, ...] * heatmaps) #加权坐标，每个位置的坐标乘以热图值（每个点的所占的权重）。加上下面的求和，就可以计算出依靠每个位置所占权重计算出的最终位置
 		coords_y = (y[None, ...] * heatmaps)
@@ -321,7 +320,6 @@ class XFeat(nn.Module):
 		mkpts_0 = d0['keypoints'][batch_idx][idx0]
 		mkpts_1 = d1['keypoints'][batch_idx][idx1]
 		sc0 = d0['scales'][batch_idx][idx0]
-		print('refine_matches')
 
 		#Compute fine offsets
 		offsets = self.net.fine_matcher(torch.cat([feats1, feats2],dim=-1)) #可以认为输出对应8×8区域中每个点的特征。两张图的相似特征进行拼接，然后送入fine_matcher（MLP）,得到维度为(K,64)，其中K是匹配关键点的个数
@@ -335,8 +333,7 @@ class XFeat(nn.Module):
 		mask_good = conf > fine_conf  #这一步应该是根据阈值和8x8区域中最突出点的权重，再进一步对关键点进行筛选
 		mkpts_0 = mkpts_0[mask_good]
 		mkpts_1 = mkpts_1[mask_good]
-		print(mkpts_0.shape)
-		print(torch.cat([mkpts_0, mkpts_1], dim=-1).shape)
+
 		return torch.cat([mkpts_0, mkpts_1], dim=-1)
 
 	@torch.inference_mode()

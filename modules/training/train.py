@@ -86,7 +86,7 @@ class Trainer():
         self.batch_size = batch_size
         self.steps = n_steps
         self.opt = optim.Adam(filter(lambda x: x.requires_grad, self.net.parameters()) , lr = lr)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.opt, step_size=30_000, gamma=gamma_steplr)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.opt, step_size=30_000, gamma=gamma_steplr) #StepLR 随着epoch的增大而逐渐减小学习率
 
         ##################### Synthetic COCO INIT ##########################
         if model_name in ('xfeat_default', 'xfeat_synthetic'):
@@ -111,15 +111,15 @@ class Trainer():
         ##################### MEGADEPTH INIT ##########################
         if model_name in ('xfeat_default', 'xfeat_megadepth'):
             TRAIN_BASE_PATH = f"{megadepth_root_path}/train_data/megadepth_indices"
-            TRAINVAL_DATA_SOURCE = f"{megadepth_root_path}/MegaDepth_v1"
+            TRAINVAL_DATA_SOURCE = f"{megadepth_root_path}/MegaDepth_v1" #MegaDepth_v1数据集199G
 
             TRAIN_NPZ_ROOT = f"{TRAIN_BASE_PATH}/scene_info_0.1_0.7"
 
-            npz_paths = glob.glob(TRAIN_NPZ_ROOT + '/*.npz')[:]
+            npz_paths = glob.glob(TRAIN_NPZ_ROOT + '/*.npz')[:] #获取匹配路径格式的所有文件名，.npz格式文件是保存的np数组
             data = torch.utils.data.ConcatDataset( [MegaDepthDataset(root_dir = TRAINVAL_DATA_SOURCE,
                             npz_path = path) for path in tqdm.tqdm(npz_paths, desc="[MegaDepth] Loading metadata")] )
 
-            self.data_loader = DataLoader(data, 
+            self.data_loader = DataLoader(data,
                                           batch_size=int(self.batch_size * 0.6 if model_name=='xfeat_default' else batch_size),
                                           shuffle=True)
             self.data_iter = iter(self.data_loader)
@@ -137,24 +137,24 @@ class Trainer():
         self.writer = SummaryWriter(ckpt_save_path + f'/logdir/{model_name}_' + time.strftime("%Y_%m_%d-%H_%M_%S"))
         self.model_name = model_name
 
-
     def train(self):
-
         self.net.train()
-
         difficulty = 0.10
 
         p1s, p2s, H1, H2 = None, None, None, None
         d = None
-
+        # augmentor是对Synthetic COCO数据集的处理
         if self.augmentor is not None:
-            p1s, p2s, H1, H2 = make_batch(self.augmentor, difficulty)
-        
+            p1s, p2s, H1, H2 = make_batch(self.augmentor, difficulty) #p1s和H1是进行变换（没有扭曲）后的结果和变换矩阵，ps2和H2是进行变换后（有扭曲）后的结果和变换矩阵
+
+        #data_iter或d是对MEGADEPTH数据集的处理
         if self.data_iter is not None:
             d = next(self.data_iter)
 
         with tqdm.tqdm(total=self.steps) as pbar:
-            for i in range(self.steps):
+            for i in range(self.steps):  #没有严格意义上的epoch
+                #dry_run 参数用于控制是否执行一个简化的训练过程，通常用于检查代码的正确性和流程的合理性，而不实际进行完整的训练。
+                # 通常意味着它只会用一个非常小的数据批次（mini-batch）来运行模型，以确保没有错误发生，并且流程可以顺利进行。
                 if not self.dry_run:
                     if self.data_iter is not None:
                         try:
@@ -169,7 +169,7 @@ class Trainer():
 
                     if self.augmentor is not None:
                         #Grab synthetic data
-                        p1s, p2s, H1, H2 = make_batch(self.augmentor, difficulty)
+                        p1s, p2s, H1, H2 = make_batch(self.augmentor, difficulty)#p1s和H1是进行变换（没有扭曲）后的图片和变换矩阵，ps2和H2是进行变换后（有扭曲）后的图片和变换矩阵
 
                 if d is not None:
                     for k in d.keys():
@@ -177,12 +177,13 @@ class Trainer():
                             d[k] = d[k].to(self.dev)
                 
                     p1, p2 = d['image0'], d['image1']
-                    positives_md_coarse = megadepth_warper.spvs_coarse(d, 8)
+                    positives_md_coarse = megadepth_warper.spvs_coarse(d, 8) #函数的目的是对来自megadepth数据集中的两个图像中生成粗略对应点
 
                 if self.augmentor is not None:
-                    h_coarse, w_coarse = p1s[0].shape[-2] // 8, p1s[0].shape[-1] // 8
+                    h_coarse, w_coarse = p1s[0].shape[-2] // 8, p1s[0].shape[-1] // 8  # 获取分辨率的长宽分别除以8后的大小
+                    # get_corresponding_pts用来处理synthetic coco数据集。获取变换后图中每8x8区域的左上角坐标，然后通过变换计算原图对应点，把无效的点去除，再把坐标映射回H/8×W/8的坐标系。
                     _ , positives_s_coarse = get_corresponding_pts(p1s, p2s, H1, H2, self.augmentor, h_coarse, w_coarse)
-
+                    #positives_s_coarse [b[k[4]]],其中4前两个是原图的x和y，后两个是变换图的x和y，且是在H/8×W/8上的坐标
                 #Join megadepth & synthetic data
                 with torch.inference_mode():
                     #RGB -> GRAY
@@ -197,7 +198,7 @@ class Trainer():
                     if self.model_name in ('xfeat_default'):
                         p1 = torch.cat([p1s, p1], dim=0)
                         p2 = torch.cat([p2s, p2], dim=0)
-                        positives_c = positives_s_coarse + positives_md_coarse
+                        positives_c = positives_s_coarse + positives_md_coarse #拼接 [b[k1+k2[4]]]
                     elif self.model_name in ('xfeat_synthetic'):
                         p1 = p1s ; p2 = p2s
                         positives_c = positives_s_coarse
@@ -221,7 +222,7 @@ class Trainer():
 
                 for b in range(len(positives_c)):
                     #Get positive correspondencies
-                    pts1, pts2 = positives_c[b][:, :2], positives_c[b][:, 2:]
+                    pts1, pts2 = positives_c[b][:, :2], positives_c[b][:, 2:] #两个返回值shape应该都是k×2,pts1是原图对应点坐标，pts2是目标图对应点坐标
 
                     #Grab features at corresponding idxs
                     m1 = feats1[b, :, pts1[:,1].long(), pts1[:,0].long()].permute(1,0)
@@ -230,11 +231,11 @@ class Trainer():
                     #grab heatmaps at corresponding idxs
                     h1 = hmap1[b, 0, pts1[:,1].long(), pts1[:,0].long()]
                     h2 = hmap2[b, 0, pts2[:,1].long(), pts2[:,0].long()]
-                    coords1 = self.net.fine_matcher(torch.cat([m1, m2], dim=-1))
+                    coords1 = self.net.fine_matcher(torch.cat([m1, m2], dim=-1)) #k×64
 
                     #Compute losses
                     loss_ds, conf = dual_softmax_loss(m1, m2)
-                    loss_coords, acc_coords = coordinate_classification_loss(coords1, pts1, pts2, conf)
+                    loss_coords, acc_coords = coordinate_classification_loss(coords1, pts1, pts2, conf) #计算坐标偏移量的的loss
 
                     loss_kp_pos1, acc_pos1 = alike_distill_loss(kpts1[b], p1[b])
                     loss_kp_pos2, acc_pos2 = alike_distill_loss(kpts2[b], p2[b])

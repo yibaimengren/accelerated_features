@@ -36,30 +36,31 @@ def generateRandomTPS(shape, grid = (8, 6), GLOBAL_MULTIPLIER = 0.3, prob = 0.5)
 
     h, w = shape
     sh, sw = h/grid[0], w/grid[1]
-    src = torch.dstack(torch.meshgrid(torch.arange(0, h + sh , sh),
+    #src grid大小的网格的坐标，其中的坐标值等间隔取自输入
+    src = torch.dstack(torch.meshgrid(torch.arange(0, h + sh , sh),  #torch.meshgrid用于生成两个网格张量，前一个把第一个输入按列排列，后一个把第二个输入按行排列，构成两个大小一样的张量
                          torch.arange(0, w + sw , sw), indexing='ij'))
 
-    offsets = torch.rand(grid[0]+1, grid[1]+1, 2) - 0.5
+    offsets = torch.rand(grid[0]+1, grid[1]+1, 2) - 0.5 #shape等同于src, -0.5是将元素大小范围从0~1转到-0.5~0.5
     offsets *= torch.tensor([ sh/2, sw/2 ]).view(1, 1, 2)  * min(0.97, 2.0 * GLOBAL_MULTIPLIER)
-    dst = src + offsets if np.random.uniform() < prob else src
+    dst = src + offsets if np.random.uniform() < prob else src  #获取一个0~1的随机数，如果大于概率值，就不添加偏移
     
-    src, dst = src.view(1, -1, 2), dst.view(1, -1, 2)
-    src = (src / torch.tensor([h,w]).view(1,1,2) ) * 2 - 1.
+    src, dst = src.view(1, -1, 2), dst.view(1, -1, 2) #把原本前两个维度合二为一，即把行和列合到一起变为一个维度
+    src = (src / torch.tensor([h,w]).view(1,1,2) ) * 2 - 1. #把坐标值(x,y)转化为比例坐标值(x/w,y/h),*2-1再把坐标调整为-1到1范围
     dst = (dst / torch.tensor([h,w]).view(1,1,2) ) * 2 - 1.
-    weights, A = findTPS(dst, src)
+    weights, A = findTPS(dst, src)  #返回值为根据输入点和输出点计算出的TPS变换，kernel_weights, affine_weights
 
-    return src, weights, A
+    return src, weights, A #src是等间距选取的坐标，weights是权重核(B,N,2)，A是仿射权重(B,3,2)
 
-
+#生成一个随机变换矩阵，可以对图像进行复杂的几何变换，包括旋转、缩放、平移和投影变换
 def generateRandomHomography(shape, GLOBAL_MULTIPLIER = 0.3):
     #Generate random in-plane rotation [-theta,+theta]
-    theta = np.radians(np.random.uniform(-30, 30))
+    theta = np.radians(np.random.uniform(-30, 30)) #随机生成一个-30到30的浮点数，然后该角度值转化为弧度值
 
     #Generate random scale in both x and y
-    scale_x, scale_y = np.random.uniform(0.35, 1.2, 2)
+    scale_x, scale_y = np.random.uniform(0.35, 1.2, 2) #随机生成一个0.35~1.2之间的浮点数
 
     #Generate random translation shift
-    tx , ty = -shape[1]/2.0 , -shape[0]/2.0 
+    tx , ty = -shape[1]/2.0 , -shape[0]/2.0
     txn, tyn = np.random.normal(0, 120.0*GLOBAL_MULTIPLIER, 2) 
 
     c, s = np.cos(theta), np.sin(theta)
@@ -109,8 +110,8 @@ class AugmentationPipe(nn.Module):
         self.batch_size = batch_size
         self.out_resolution = out_resolution 
         self.sides_crop = sides_crop
-        self.max_num_imgs = max_num_imgs
-        self.num_test_imgs = num_test_imgs
+        self.max_num_imgs = max_num_imgs #前max_num_imgs张图片作为训练图片
+        self.num_test_imgs = num_test_imgs #后num_test_imgs张图片作为测试图片
         self.dims_t = torch.tensor([int(self.dims[0]*(1. - self.sides_crop)) - int(self.dims[0]*self.sides_crop) -1,
                                     int(self.dims[1]*(1. - self.sides_crop)) - int(self.dims[1]*self.sides_crop) -1]).float().to(device).view(1,1,2)
         self.dims_s = torch.tensor([ self.dims_t[0,0,0] / out_resolution[0],
@@ -122,17 +123,17 @@ class AugmentationPipe(nn.Module):
         self.geometric = geometric
         self.cnt = 1
         self.reload_step = reload_step
-
+        #kornia是一款基于pytorch的可微分的计算机视觉库。其中kornia.augmentation中提供的是可以反向传播的数据增强方法，且可以检索变换，也就意味着可以撤回变换或者用这些记录的变换做一些别的事
         list_augmentation = [
                         #kornia.augmentation.RandomChannelShuffle(p=0.5),
-                        kornia.augmentation.ColorJitter(0.15, 0.15, 0.15, 0.15, p=1.),
+                        kornia.augmentation.ColorJitter(0.15, 0.15, 0.15, 0.15, p=1.), # 改变图像的属性：亮度（brightness）、对比度（contrast）、饱和度（saturation）和色调（hue)
                         kornia.augmentation.RandomEqualize(p = 0.4),
                         kornia.augmentation.RandomGaussianBlur(p = 0.3, sigma = (2.0, 2.0), kernel_size = (7,7))
                         ]
         if photometric is False:
             list_augmentation = []
 
-        self.aug_list = kornia.augmentation.ImageSequential(*list_augmentation)
+        self.aug_list = kornia.augmentation.ImageSequential(*list_augmentation) #将数据增强操作整合成一个序列
         
         if len(self.all_imgs) < 10:
             raise RuntimeError('Couldnt find enough images to train. Please check the path: ', img_dir)
@@ -143,7 +144,7 @@ class AugmentationPipe(nn.Module):
             if len(self.all_imgs) - num_test_imgs < max_num_imgs:
                 raise RuntimeError('Error: test set overlaps with training set! Decrease number of test imgs')
 
-            self.load_imgs()
+            self.load_imgs() #读取图片，训练图片放到 self.train， 测试图片放到self.test
 
             self.TPS = True
 
@@ -153,14 +154,15 @@ class AugmentationPipe(nn.Module):
             random.shuffle(self.all_imgs)
 
             train = []
-            fast = cv2.FastFeatureDetector_create(30)
+            fast = cv2.FastFeatureDetector_create(30) #创建fast算法（一种快速的角点检测算法，角点通常是线段的终点或两线交点或者说是一些突出的点）对象，用于检测关键点。30是检测阈值，默认是10。
             for p in tqdm.tqdm(self.all_imgs[:self.max_num_imgs], desc='loading train'):
                 im = cv2.imread(p)
                 halfH, halfW = im.shape[0]//2, im.shape[1]//2
+                #宽比高小则旋转图像
                 if halfH > halfW:
                     im = np.rot90(im)
                     halfH, halfW = halfW, halfH
-
+                #统一图像分辨率
                 if im.shape[0] != self.dims[1] or im.shape[1] != self.dims[0]:
                     im = cv2.resize(im, self.dims)
 
@@ -223,26 +225,29 @@ class AugmentationPipe(nn.Module):
                     src, weights, A are parameters from a TPS warp (all torch.Tensors)
 
         """
-
+        #每次forward，self.cnt的值都会加1。当self.cnt的值等于self.reload_step时，就会重新加载数据，防止数据被重复使用，从而确保数据多样性
         if self.cnt % self.reload_step == 0:
             self.load_imgs()
 
+        #是否要进行几何变换
         if self.geometric is False:
             difficulty = 0.
 
         with torch.no_grad():
-            x = (x/255.).to(self.device)
+            x = (x/255.).to(self.device) #归一化操作
             b, c, h, w = x.shape
             shape = (h, w)
               
             ######## Geometric Transformations
-
+            #为每张图随机生成一个变换矩阵然后合并，该变换矩阵可以对图像进行复杂的几何变换，包括旋转、缩放、平移和投影变换。
             H = torch.tensor(np.array([generateRandomHomography(shape, difficulty) for b in range(self.batch_size)]),
                                dtype = torch.float32).to(self.device)
-            
+
+            #对输入x应用变换
             output = kornia.geometry.transform.warp_perspective(x, H,
                             dsize = shape, padding_mode = 'zeros')
 
+            #变换后的图像四周会产生一些无效的像素，这里把它们裁掉
             #crop % of image boundaries each side to reduce invalid pixels after warps
             low_h = int(h * self.sides_crop); low_w = int(w*self.sides_crop)
             high_h = int(h*(1. - self.sides_crop)); high_w= int(w * (1. - self.sides_crop))
@@ -250,10 +255,10 @@ class AugmentationPipe(nn.Module):
             x = x[..., low_h:high_h, low_w:high_w]
 
             #apply TPS if desired:
-            if TPS:
+            if TPS: #这里会对图像进行扭曲， #薄板样条插值(Thin Plate Spline)：假设有一块板，已知多个点的位移，通过TPS可以计算得到其他点的位置，可以用来模拟形变
                 src, weights, A = None, None, None
                 for b in range(self.batch_size):
-                    b_src, b_weights, b_A = generateRandomTPS(shape, (8,6), difficulty, prob = prob_deformation)
+                    b_src, b_weights, b_A = generateRandomTPS(shape, (8,6), difficulty, prob = prob_deformation) #difficulty：点的变换程度。prob_deformation：进行变换的概率
                     b_src, b_weights, b_A = b_src.to(self.device), b_weights.to(self.device), b_A.to(self.device)
 
                     if src is None:
@@ -263,21 +268,22 @@ class AugmentationPipe(nn.Module):
                         weights = torch.cat((b_weights, weights))
                         A = torch.cat((b_A, A))
 
-                output = warp_image_tps(output, src, weights, A)
+                output = warp_image_tps(output, src, weights, A) #对整张图应用变换
 
-            output = F.interpolate(output, self.out_resolution[::-1], mode = 'nearest')
+            output = F.interpolate(output, self.out_resolution[::-1], mode = 'nearest') #采样调整分辨率
             x = F.interpolate(x, self.out_resolution[::-1], mode = 'nearest')
 
-            mask = ~torch.all(output == 0, dim=1, keepdim=True)
+            mask = ~torch.all(output == 0, dim=1, keepdim=True) #找到通道维度上全为0的位置，因为经过变换后，超出原图的部分呈现黑色即rgb(0,0,0)
             mask = mask.expand(-1,3,-1,-1)
 
             # Make-up invalid regions with texture from the batch
+            #总的来说，这段代码的目的是在图像经过几何变换后，用图像其他部分的数据来填充那些因变换而产生的无效像素区域，以避免这些区域影响后续的图像处理或分析步骤。
             rv = 1 if not TPS else 2
-            output_shifted = torch.roll(x, rv, 0)
+            output_shifted = torch.roll(x, rv, 0) #可是为什么是在batch维度？
             output[~mask] = output_shifted[~mask]
             mask = mask[:, 0, :, :]
 
-            ######## Photometric Transformations
+            ######## Photometric Transformations 光度变换，即调整亮度、色调、饱和度和对比度等
             output = self.aug_list(output)
 
             b, c, h, w = output.shape
