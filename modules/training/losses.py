@@ -177,7 +177,6 @@ def coordinate_classification_loss(coords1, pts1, pts2, conf):
     '''
     #Do not backprop coordinate warps
     with torch.no_grad():
-
         coords1_detached = pts1 * 8 #把坐标点调整回H×W上
 
         #find offset
@@ -194,7 +193,7 @@ def coordinate_classification_loss(coords1, pts1, pts2, conf):
     acc = acc.sum() / len(acc)
 
     loss = F.nll_loss(coords1_log, labels1, reduction = 'none')
-    
+
     #Weight loss by confidence, giving more emphasis on reliable matches
     conf = conf / conf.sum()
     loss = (loss * conf).sum()

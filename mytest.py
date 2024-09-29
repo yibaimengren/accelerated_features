@@ -54,6 +54,7 @@ for b in range(len(positives_c)):
     # grab heatmaps at corresponding idxs
     h1 = hmap1[b, 0, pts1[:, 1].long(), pts1[:, 0].long()]
     h2 = hmap2[b, 0, pts2[:, 1].long(), pts2[:, 0].long()]
+
     coords1 = net.fine_matcher(torch.cat([m1, m2], dim=-1))  # k×64
 
     loss_ds, conf = dual_softmax_loss(m1, m2)
