@@ -66,7 +66,8 @@ class XFeat(nn.Module):
 		#4.使用self.NMS(K1h, threshold=detection_threshold, kernel_size=5)获取每5x5区域内最大值大的索引mkpts
 		#5.将关键点对应的局部重要性值k1h*关键点对应的heatmap值作为评估分数scores
 		#6.根据scores选出得分前top_k的元素，获取每个元素对应关键点坐标、分数
-		#7.
+		#7.再选出对应的前top_k个特征，（但是这里对应每个特征点的特征是通过插值得到的)
+
 		M1, K1, H1 = self.net(x) #M1:特征描述器64×H/8×W/8，k1:关键点特征图 65×H/8×W/8，H1：heatmap 1×H/8×W/8 似乎是表示对应特征描述器向量能被匹配的概率
 		M1 = F.normalize(M1, dim=1) #在通道维度进行归一化
 
@@ -383,9 +384,10 @@ class XFeat(nn.Module):
 
 	def extract_dualscale(self, x, top_k, s1 = 0.6, s2 = 1.3):
 		'''将输入进行两种比例的缩放，然后从中提取不同个数的关键点，最后将二者的关节点坐标和特征进行拼接'''
+		#1.对输入进行两种比例的线性插值得到x1和x2
 		x1 = F.interpolate(x, scale_factor=s1, align_corners=False, mode='bilinear')
 		x2 = F.interpolate(x, scale_factor=s2, align_corners=False, mode='bilinear')
-
+		 
 		B, _, _, _ = x.shape
 		#使用net提取特征后，获取heatmap中前top_k大的元素的索引，再根据这个索引选出对应的特征和关键点坐标
 		mkpts_1, feats_1 = self.extractDense(x1, int(top_k*0.20))#B, top_k, 2；B, top_k, 64;
