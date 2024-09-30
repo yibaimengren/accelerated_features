@@ -66,8 +66,12 @@ class XFeat(nn.Module):
 		#4.使用self.NMS(K1h, threshold=detection_threshold, kernel_size=5)获取每5x5区域内最大值大的索引mkpts
 		#5.将关键点对应的局部重要性值k1h*关键点对应的heatmap值作为评估分数scores
 		#6.根据scores选出得分前top_k的元素，获取每个元素对应关键点坐标、分数
+<<<<<<< HEAD
 		#7.再选出对应的前top_k个特征，（但是这里对应每个特征点的特征是通过插值得到的)
 
+=======
+		#7.选出前top_k个特征，其中特征与关键点是通过对特征进行插值实现一一对应的。
+>>>>>>> 1959f83ef0a74722d4a42b6eb4787949098ffda2
 		M1, K1, H1 = self.net(x) #M1:特征描述器64×H/8×W/8，k1:关键点特征图 65×H/8×W/8，H1：heatmap 1×H/8×W/8 似乎是表示对应特征描述器向量能被匹配的概率
 		M1 = F.normalize(M1, dim=1) #在通道维度进行归一化
 
@@ -122,6 +126,9 @@ class XFeat(nn.Module):
 					'scales'       ->   torch.Tensor(top_k,): extraction scale
 					'descriptors'  ->   torch.Tensor(top_k, 64): coarse local features
 		"""
+		#1.如果要采取多尺度
+
+		#1.如果不采取多尺度
 		if top_k is None: top_k = self.top_k
 		if multiscale:
 			mkpts, sc, feats = self.extract_dualscale(x, top_k)
@@ -365,12 +372,12 @@ class XFeat(nn.Module):
 		if top_k < 1:
 			top_k = 100_000_000
 
-		x, rh1, rw1 = self.preprocess_tensor(x)
+		x, rh1, rw1 = self.preprocess_tensor(x) #确保图像可以被32整除
 
 		M1, K1, H1 = self.net(x) #M1:特征描述器64×H/8×W/8，k1:关键点特征图 65×H/8×W/8，H1：heatmap 1×H/8×W/8 似乎是表示对应特征描述器向量能被匹配的概率
 		B, C, _H1, _W1 = M1.shape
 		
-		xy1 = (self.create_xy(_H1, _W1, M1.device) * 8).expand(B,-1,-1) #create返回一个shape为_H1*_W1×2的张量，其中包含h×w大小网格的所有坐标'''
+		xy1 = (self.create_xy(_H1, _W1, M1.device) * 8).expand(B,-1,-1) #create返回一个shape为_H1*_W1×2的张量，其中包含_H1×_W1大小网格的所有坐标'''
 		M1 = M1.permute(0,2,3,1).reshape(B, -1, C) #B, H/8*H/8, 64
 
 		H1 = H1.permute(0,2,3,1).reshape(B, -1) #B, 1*H/8*W/8
@@ -384,7 +391,12 @@ class XFeat(nn.Module):
 
 	def extract_dualscale(self, x, top_k, s1 = 0.6, s2 = 1.3):
 		'''将输入进行两种比例的缩放，然后从中提取不同个数的关键点，最后将二者的关节点坐标和特征进行拼接'''
+<<<<<<< HEAD
 		#1.对输入进行两种比例的线性插值得到x1和x2
+=======
+		#1.对输入进行两种不同比例的缩放（默认一个是缩小一个是放大）
+		#2.
+>>>>>>> 1959f83ef0a74722d4a42b6eb4787949098ffda2
 		x1 = F.interpolate(x, scale_factor=s1, align_corners=False, mode='bilinear')
 		x2 = F.interpolate(x, scale_factor=s2, align_corners=False, mode='bilinear')
 		 
